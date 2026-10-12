@@ -24,6 +24,9 @@ class Settings(BaseSettings):
         "http://127.0.0.1:5173",
     ]
 
+    # Database
+    database_url: str = "sqlite:///./taburcuai.db"
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
