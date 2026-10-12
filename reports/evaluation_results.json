@@ -1,0 +1,22 @@
+{
+  "cases_evaluated": 50,
+  "medication_metrics": {
+    "total_ground_truth": 150,
+    "total_extracted": 114,
+    "true_positives": 114,
+    "precision": 1.0,
+    "recall": 0.76,
+    "f1_score": 0.8636,
+    "hallucination_rate": 0.0
+  },
+  "verification_metrics": {
+    "total_spans_checked": 114,
+    "correct_spans": 114,
+    "span_accuracy": 1.0
+  },
+  "readability_metrics": {
+    "average_raw_atesman_score": 50.53,
+    "average_simplified_atesman_score": 63.83,
+    "readability_improvement": 13.3
+  }
+}
