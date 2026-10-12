@@ -1,0 +1,69 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environment
+backend/venv/
+backend/.venv/
+venv/
+.venv/
+ENV/
+env/
+
+# Environment variables – NEVER commit the real .env
+.env
+!.env.example
+
+# pytest / coverage
+.pytest_cache/
+htmlcov/
+.coverage
+coverage.xml
+
+# ruff / mypy / type stubs
+.ruff_cache/
+.mypy_cache/
+
+# SQLite databases
+*.db
+*.sqlite
+*.sqlite3
+
+# Node / frontend
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Data (may contain patient data – NEVER commit)
+data/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Reports (generated, large)
+reports/*.csv
