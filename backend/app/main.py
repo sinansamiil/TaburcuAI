@@ -14,6 +14,10 @@ from app.db.session import Base, engine
 async def lifespan(app: FastAPI):
     # Ensure all tables are created on startup
     Base.metadata.create_all(bind=engine)
+    from app.db.session import SessionLocal
+    from app.db.init_db import seed_default_data
+    with SessionLocal() as db:
+        seed_default_data(db)
     yield
 
 

@@ -160,5 +160,10 @@ def get_llm_client(provider: str | None = None) -> LLMClient:
         if not settings.openai_api_key:
             raise ValueError("OPENAI_API_KEY is not configured in environment/.env")
         return OpenAILLMClient(api_key=settings.openai_api_key)
+    elif active_provider == "google":
+        if not settings.google_api_key:
+            raise ValueError("GOOGLE_API_KEY is not configured in environment/.env")
+        from app.core.llm.google_adapter import GoogleLLMClient
+        return GoogleLLMClient(api_key=settings.google_api_key)
     else:
         raise ValueError(f"Unsupported LLM provider: {active_provider}")

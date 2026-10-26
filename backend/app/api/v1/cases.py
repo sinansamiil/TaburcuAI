@@ -8,7 +8,7 @@ Cases API endpoints:
 
 from datetime import UTC, datetime
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from sqlalchemy.orm import Session
 
 from app.api.v1.schemas import (
@@ -30,33 +30,47 @@ from app.core.pipeline import (
 from app.core.schemas.models import AnswerEvaluation, DischargeInfo, Question, SimplifiedPlan
 from app.db.models import CaseModel, QuestionModel, RiskReportModel
 from app.db.session import get_db
-from app.diseases.heart_failure import HeartFailureModule
+from app.diseases.registry import DISEASE_CATALOG, get_disease_module
 
 router = APIRouter(prefix="/cases", tags=["Cases"])
 
 
-def get_disease_module(disease_id: str):
-    """Retrieve disease module by ID (currently heart_failure)."""
-    if disease_id == "heart_failure":
-        return HeartFailureModule()
-    raise HTTPException(
-        status_code=status.HTTP_400_BAD_REQUEST,
-        detail=f"Desteklenmeyen hastalık modülü: {disease_id}",
-    )
+@router.get("/diseases/catalog")
+def list_disease_modules():
+    """Return all available, active and roadmap clinical disease modules."""
+    return {"catalog": DISEASE_CATALOG}
 
 
-@router.post("", response_model=CaseResponse, status_code=status.HTTP_201_CREATED)
-def create_case(payload: CreateCaseRequest, db: Session = Depends(get_db)):
-    """Extract clinical info from discharge summary, simplify, and store in database."""
-    if not payload.raw_text.strip():
+ALLOWED_UPLOAD_TYPES = {
+    "application/pdf",
+    "image/jpeg",
+    "image/png",
+    "image/webp",
+    "image/heic",
+    "image/heif",
+}
+MAX_UPLOAD_BYTES = 15 * 1024 * 1024  # 15 MB
+
+
+def _create_case_from_text(
+    raw_text: str,
+    disease: str,
+    db: Session,
+    llm=None,
+    patient_name: str | None = None,
+    protocol_no: str | None = None,
+    ward: str | None = None,
+) -> CaseResponse:
+    """Shared pipeline: extract → verify → simplify → persist."""
+    if not raw_text.strip():
         raise HTTPException(status_code=400, detail="Taburculuk metni boş olamaz.")
 
-    disease_mod = get_disease_module(payload.disease)
-    llm = get_llm_client()
+    disease_mod = get_disease_module(disease)
+    llm = llm or get_llm_client()
 
     try:
         discharge_info = extract_discharge_info(
-            discharge_text=payload.raw_text,
+            discharge_text=raw_text,
             disease_module=disease_mod,
             llm_client=llm,
             verify=True,
@@ -67,17 +81,36 @@ def create_case(payload: CreateCaseRequest, db: Session = Depends(get_db)):
             detail=f"Çıkarma işlemi başarısız oldu: {exc}",
         ) from exc
 
-    simplified = simplify_discharge_plan(discharge_info)
+    simplified = simplify_discharge_plan(discharge_info, disease_id=disease)
 
     db_case = CaseModel(
-        disease=payload.disease,
-        raw_text=payload.raw_text,
+        disease=disease,
+        raw_text=raw_text,
         discharge_info=discharge_info.model_dump(),
         simplified_plan=simplified.model_dump(),
     )
     db.add(db_case)
     db.commit()
     db.refresh(db_case)
+
+    # Lazily ensure / initialize workflow with patient identity
+    from app.core.workflow import ensure_workflow
+    ensure_workflow(
+        db,
+        db_case,
+        protocol_no=protocol_no,
+        patient_name=patient_name,
+        ward=ward,
+        commit=True,
+    )
+
+    phenotype = None
+    gdmt = None
+    if disease == "heart_failure":
+        from app.diseases.heart_failure.gdmt import analyze_heart_failure_case
+        analysis = analyze_heart_failure_case(raw_text, discharge_info.medications, discharge_info.diagnosis_text)
+        phenotype = analysis["phenotype"]
+        gdmt = analysis["gdmt"]
 
     return CaseResponse(
         id=db_case.id,
@@ -86,7 +119,66 @@ def create_case(payload: CreateCaseRequest, db: Session = Depends(get_db)):
         discharge_info=discharge_info,
         simplified_plan=simplified,
         created_at=db_case.created_at,
+        phenotype=phenotype,
+        gdmt=gdmt,
     )
+
+
+@router.post("", response_model=CaseResponse, status_code=status.HTTP_201_CREATED)
+def create_case(payload: CreateCaseRequest, db: Session = Depends(get_db)):
+    """Extract clinical info from discharge summary text, simplify, and store."""
+    return _create_case_from_text(
+        payload.raw_text,
+        payload.disease,
+        db,
+        patient_name=payload.patient_name,
+        protocol_no=payload.protocol_no,
+        ward=payload.ward,
+    )
+
+
+@router.post("/upload", response_model=CaseResponse, status_code=status.HTTP_201_CREATED)
+async def create_case_from_document(
+    file: UploadFile = File(..., description="Epikriz PDF'i veya fotoğrafı"),
+    disease: str = Form(default="heart_failure"),
+    db: Session = Depends(get_db),
+):
+    """
+    Accept a discharge document as PDF or image.
+
+    Step 1: Gemini (vision) transcribes the document verbatim.
+    Step 2: The transcription runs through the same pipeline as typed text,
+            so every extracted item is still verified against the transcribed text.
+    """
+    mime = (file.content_type or "").lower()
+    if mime not in ALLOWED_UPLOAD_TYPES:
+        raise HTTPException(
+            status_code=415,
+            detail=f"Desteklenmeyen dosya türü ({mime or 'bilinmiyor'}). PDF, JPG, PNG veya WEBP yükleyin.",
+        )
+
+    data = await file.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="Yüklenen dosya boş.")
+    if len(data) > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail="Dosya 15 MB sınırını aşıyor.")
+
+    llm = get_llm_client()
+    if not hasattr(llm, "transcribe_document"):
+        raise HTTPException(
+            status_code=400,
+            detail="Belge/fotoğraf analizi için .env dosyasında LLM_PROVIDER=google olmalı.",
+        )
+
+    try:
+        transcribed = llm.transcribe_document(data, mime)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Belge okunamadı: {exc}",
+        ) from exc
+
+    return _create_case_from_text(transcribed, disease, db, llm=llm)
 
 
 @router.get("/{case_id}", response_model=CaseResponse)
@@ -99,6 +191,14 @@ def get_case(case_id: str, db: Session = Depends(get_db)):
     discharge_info = DischargeInfo.model_validate(db_case.discharge_info)
     simplified_plan = SimplifiedPlan.model_validate(db_case.simplified_plan)
 
+    phenotype = None
+    gdmt = None
+    if db_case.disease == "heart_failure":
+        from app.diseases.heart_failure.gdmt import analyze_heart_failure_case
+        analysis = analyze_heart_failure_case(db_case.raw_text, discharge_info.medications, discharge_info.diagnosis_text)
+        phenotype = analysis["phenotype"]
+        gdmt = analysis["gdmt"]
+
     return CaseResponse(
         id=db_case.id,
         disease=db_case.disease,
@@ -106,6 +206,8 @@ def get_case(case_id: str, db: Session = Depends(get_db)):
         discharge_info=discharge_info,
         simplified_plan=simplified_plan,
         created_at=db_case.created_at,
+        phenotype=phenotype,
+        gdmt=gdmt,
     )
 
 

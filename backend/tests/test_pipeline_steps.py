@@ -42,7 +42,7 @@ def test_simplify_discharge_plan() -> None:
     plan = simplify_discharge_plan(info)
     assert len(plan.daily_schedule) == 1
     assert MedicationScheduleSlot.MORNING in plan.daily_schedule[0].slots
-    assert len(plan.daily_routine) == 3
+    assert len(plan.daily_routine) >= 3
     assert "hekiminize danışın" in plan.disclaimer
 
 

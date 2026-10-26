@@ -30,7 +30,11 @@ env/
 
 # Environment variables – NEVER commit the real .env
 .env
+.env.*
+*.env
 !.env.example
+backend/diff_debug.txt
+
 
 # pytest / coverage
 .pytest_cache/

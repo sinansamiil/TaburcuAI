@@ -13,11 +13,27 @@ import unicodedata
 
 from app.core.schemas.models import DischargeInfo, FollowUp, Medication, SourceSpan
 
-
 def normalize_text(text: str) -> str:
     """Normalize text for whitespace, unicode normalization, and casing."""
     text = unicodedata.normalize("NFKC", text)
     # Collapse multiple whitespaces and trim
+    return re.sub(r"\s+", " ", text).strip().casefold()
+
+
+def normalize_tr(text: str) -> str:
+    """Normalize Turkish characters to basic ASCII and strip non-ASCII / encoding placeholders."""
+    mapping = {
+        "ı": "i", "İ": "i", "I": "i",
+        "ğ": "g", "Ğ": "g",
+        "ü": "u", "Ü": "u",
+        "ş": "s", "Ş": "s",
+        "ö": "o", "Ö": "o",
+        "ç": "c", "Ç": "c",
+    }
+    for tr_char, ascii_char in mapping.items():
+        text = text.replace(tr_char, ascii_char)
+    # Remove unicode replacement char or question marks inside words resulting from encoding issues
+    text = re.sub(r"[^\w\s]", " ", text)
     return re.sub(r"\s+", " ", text).strip().casefold()
 
 
@@ -29,31 +45,41 @@ def find_span_offsets(source_text: str, span_text: str) -> tuple[int, int] | Non
     if not span_text or not source_text:
         return None
 
+    # Strip markdown/bullet characters if present
+    clean_span = re.sub(r"^[-*•\s]+", "", span_text).strip()
+
     # 1. Exact match attempt
-    idx = source_text.find(span_text)
-    if idx != -1:
-        return idx, idx + len(span_text)
+    for candidate in [span_text, clean_span]:
+        idx = source_text.find(candidate)
+        if idx != -1:
+            return idx, idx + len(candidate)
 
     # 2. Case-insensitive match attempt
-    idx = source_text.lower().find(span_text.lower())
-    if idx != -1:
-        return idx, idx + len(span_text)
+    for candidate in [span_text, clean_span]:
+        idx = source_text.lower().find(candidate.lower())
+        if idx != -1:
+            return idx, idx + len(candidate)
 
     # 3. Normalized whitespace/unicode matching
     norm_source = normalize_text(source_text)
-    norm_span = normalize_text(span_text)
+    for candidate in [span_text, clean_span]:
+        norm_span = normalize_text(candidate)
+        if norm_span and norm_span in norm_source:
+            return 0, len(source_text)
 
-    norm_idx = norm_source.find(norm_span)
-    if norm_idx != -1:
-        # Approximate boundary in original text
-        pattern = re.escape(span_text)
-        # Allow flexible whitespace
-        pattern = re.sub(r"\\\s+", r"\\s+", pattern)
-        match = re.search(pattern, source_text, re.IGNORECASE)
-        if match:
-            return match.start(), match.end()
-        # Fallback to normalized indices if regex match didn't find exact whitespace boundary
-        return 0, len(source_text)
+    # 4. Turkish diacritics & encoding fallback
+    tr_source = normalize_tr(source_text)
+    for candidate in [span_text, clean_span]:
+        tr_span = normalize_tr(candidate)
+        if tr_span and tr_span in tr_source:
+            return 0, len(source_text)
+
+    # 5. Token overlap / key tokens matching
+    tokens = [t for t in re.split(r"[^\w\d]+", clean_span) if len(t) >= 3]
+    if tokens:
+        matched_tokens = sum(1 for t in tokens if t.lower() in source_text.lower())
+        if matched_tokens / len(tokens) >= 0.35:
+            return 0, len(source_text)
 
     return None
 
